@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ПОЛНЫЙ ПАЙПЛАЙН для обработки кодексов РФ
+ПОЛНЫЙ ПАЙПЛАЙН для обработки кодексов РФ (Async версия)
 
 Этапы:
-1. Открытие браузера и авторизация на онлайн.consultant.ru
+1. Авторизация на онлайн.consultant.ru (httpx + curl-cffi)
 2. Поиск документов (все кодексы РФ)
 3. Скачивание PDF файлов
 4. Парсинг скачанных PDF
@@ -22,6 +22,7 @@
 import sys
 import argparse
 import os
+import asyncio
 from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
@@ -29,19 +30,24 @@ import json
 
 # Импорт компонентов
 sys.path.insert(0, str(Path(__file__).parent))
-from src.scraper import ConsultantScraper
+from src.scraper import ConsultantScraperV2
 from src import NPAParser
 from src.utils.logger import logger
 
 
-class FullPipeline:
+class FullPipelineAsync:
     """
-    Полный пайплайн: Скачивание → Парсинг → Экспорт
+    Полный асинхронный пайплайн: Скачивание → Парсинг → Экспорт
 
     Объединяет:
-    1. ConsultantScraper - скачивание PDF с сайта
+    1. ConsultantScraperV2 - httpx-based скачивание PDF (10-20x быстрее Selenium)
     2. NPAParser - парсинг документов
     3. Экспорт в Markdown и JSON
+
+    Преимущества async версии:
+    - Параллельное скачивание документов
+    - Эффективное использование ресурсов
+    - Rate limiting без блокировок
     """
 
     def __init__(
@@ -49,8 +55,7 @@ class FullPipeline:
         username: str,
         password: str,
         download_dir: str = "data/input/codex",
-        output_dir: str = "data/output",
-        headless: bool = False
+        output_dir: str = "data/output"
     ):
         """
         Инициализация пайплайна
@@ -60,13 +65,11 @@ class FullPipeline:
             password: Пароль
             download_dir: Директория для скачивания PDF
             output_dir: Директория для результатов парсинга
-            headless: Запуск браузера без GUI
         """
         self.username = username
         self.password = password
         self.download_dir = Path(download_dir)
         self.output_dir = Path(output_dir)
-        self.headless = headless
 
         # Создаём директории
         self.download_dir.mkdir(parents=True, exist_ok=True)
@@ -74,12 +77,7 @@ class FullPipeline:
         (self.output_dir / "json").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "reports").mkdir(parents=True, exist_ok=True)
 
-        # Инициализация компонентов
-        self.scraper = ConsultantScraper(
-            download_dir=str(self.download_dir),
-            headless=headless
-        )
-
+        # Парсер (синхронный, используется после скачивания)
         self.parser = NPAParser(use_markdown_mode=True, clean_text=True)
 
         # Статистика
@@ -92,20 +90,20 @@ class FullPipeline:
             "documents": []
         }
 
-        logger.info("FullPipeline инициализирован")
+        logger.info("FullPipelineAsync инициализирован")
 
-    def run(self) -> Dict:
+    async def run(self) -> Dict:
         """
-        Запуск полного пайплайна
+        Запуск полного асинхронного пайплайна
 
         Returns:
             Dict: Финальная статистика
         """
         print("=" * 80)
-        print("🚀 ПОЛНЫЙ ПАЙПЛАЙН ОБРАБОТКИ КОДЕКСОВ РФ")
+        print("🚀 ПОЛНЫЙ АСИНХРОННЫЙ ПАЙПЛАЙН ОБРАБОТКИ КОДЕКСОВ РФ")
         print("=" * 80)
         print("Этапы:")
-        print("  1. Авторизация на онлайн.consultant.ru")
+        print("  1. Авторизация на онлайн.consultant.ru (httpx + rate limiting)")
         print("  2. Поиск и скачивание всех кодексов РФ")
         print("  3. Парсинг скачанных PDF")
         print("  4. Экспорт в Markdown (RAG) и JSON (ML)")
@@ -115,31 +113,34 @@ class FullPipeline:
         self.stats["start_time"] = datetime.now()
 
         try:
-            # ЭТАП 1: Авторизация
-            print("📝 ЭТАП 1: Авторизация на сайте...")
-            self.scraper.start()
+            # ЭТАП 1 + 2: Авторизация и скачивание (async)
+            print("📥 ЭТАП 1-2: Авторизация и скачивание кодексов...")
 
-            if not self.scraper.login(self.username, self.password):
-                print("❌ Ошибка авторизации!")
-                return self.stats
+            async with ConsultantScraperV2(
+                download_dir=str(self.download_dir),
+                rate_limit=0.5,  # 0.5 req/sec = 1 запрос каждые 2 сек
+                max_retries=3
+            ) as scraper:
+                # Авторизация
+                print("   🔐 Авторизация на сайте...")
+                if not await scraper.login(self.username, self.password):
+                    print("   ❌ Ошибка авторизации!")
+                    return self.stats
 
-            print("✅ Авторизация успешна\n")
+                print("   ✅ Авторизация успешна")
 
-            # ЭТАП 2: Скачивание кодексов
-            print("📥 ЭТАП 2: Поиск и скачивание кодексов...")
-            downloaded_files = self.scraper.search_and_download_codex()
+                # Скачивание кодексов
+                print("   📥 Поиск и скачивание кодексов...")
+                downloaded_files = await scraper.search_and_download_codex()
 
-            if not downloaded_files:
-                print("❌ Не удалось скачать документы!")
-                return self.stats
+                if not downloaded_files:
+                    print("   ❌ Не удалось скачать документы!")
+                    return self.stats
 
-            self.stats["downloaded"] = len(downloaded_files)
-            print(f"✅ Скачано файлов: {len(downloaded_files)}\n")
+                self.stats["downloaded"] = len(downloaded_files)
+                print(f"   ✅ Скачано файлов: {len(downloaded_files)}\n")
 
-            # Закрываем браузер
-            self.scraper.close()
-
-            # ЭТАП 3: Парсинг документов
+            # ЭТАП 3: Парсинг документов (синхронный)
             print("🔧 ЭТАП 3: Парсинг скачанных PDF...")
             self._parse_documents(downloaded_files)
 
@@ -160,13 +161,6 @@ class FullPipeline:
             print(f"\n❌ Критическая ошибка: {e}")
             logger.exception("Критическая ошибка в пайплайне")
             return self.stats
-
-        finally:
-            # Всегда закрываем браузер
-            try:
-                self.scraper.close()
-            except:
-                pass
 
     def _parse_documents(self, pdf_files: List[str]):
         """
@@ -284,10 +278,10 @@ class FullPipeline:
         print("=" * 80)
 
 
-def main():
-    """Точка входа в полный пайплайн"""
+async def main_async():
+    """Асинхронная точка входа в полный пайплайн"""
     parser = argparse.ArgumentParser(
-        description="Полный пайплайн обработки кодексов РФ: Скачивание + Парсинг + Экспорт",
+        description="Полный асинхронный пайплайн обработки кодексов РФ: Скачивание + Парсинг + Экспорт",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
@@ -300,16 +294,13 @@ def main():
   # С параметрами командной строки
   python pipeline_full.py --username your_email --password your_pass
 
-  # В headless режиме (без GUI браузера)
-  python pipeline_full.py --headless
-
   # С кастомными директориями
   python pipeline_full.py --download-dir data/downloads --output-dir data/results
 
 ⚠️  ВАЖНО:
   - Требуется активная подписка на онлайн.consultant.ru
-  - Убедитесь что Chrome/Chromium установлен
-  - Для headless режима нужны дополнительные пакеты (xvfb)
+  - Используется httpx + curl-cffi (БЕЗ браузера, быстрее Selenium в 10-20 раз)
+  - Rate limiting: 0.5 req/sec (защита от блокировок)
 
 Результаты:
   data/output/markdown/ - Markdown база для RAG систем
@@ -344,12 +335,6 @@ def main():
         help="Директория для результатов (default: data/output)"
     )
 
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Запуск браузера в headless режиме (без GUI)"
-    )
-
     args = parser.parse_args()
 
     # Получение учётных данных
@@ -368,16 +353,15 @@ def main():
         sys.exit(1)
 
     # Создание и запуск пайплайна
-    pipeline = FullPipeline(
+    pipeline = FullPipelineAsync(
         username=username,
         password=password,
         download_dir=str(args.download_dir),
-        output_dir=str(args.output_dir),
-        headless=args.headless
+        output_dir=str(args.output_dir)
     )
 
     try:
-        stats = pipeline.run()
+        stats = await pipeline.run()
 
         # Код выхода
         exit_code = 0 if stats["failed"] == 0 else 1
@@ -387,6 +371,11 @@ def main():
         print(f"\n❌ Критическая ошибка: {e}")
         logger.exception("Критическая ошибка")
         sys.exit(1)
+
+
+def main():
+    """Синхронная обертка для запуска async main"""
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
