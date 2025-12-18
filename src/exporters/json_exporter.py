@@ -47,8 +47,11 @@ class JSONExporter:
         """
         logger.info(f"Экспорт документа в JSON: {output_path}")
 
-        # Генерация словаря
+        # Генерация словаря через Pydantic (правильная сериализация datetime)
         data = document.to_dict()
+
+        # Конвертируем datetime объекты в строки
+        data = self._serialize_datetime(data)
 
         # Создание директории если нужно
         output_file = Path(output_path)
@@ -65,6 +68,27 @@ class JSONExporter:
 
         logger.success(f"JSON файл создан: {output_path}")
         return str(output_file.absolute())
+
+    def _serialize_datetime(self, obj):
+        """
+        Рекурсивная сериализация datetime объектов в строки
+
+        Args:
+            obj: Объект для сериализации
+
+        Returns:
+            Объект с конвертированными datetime в ISO формат
+        """
+        from datetime import datetime
+
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, dict):
+            return {key: self._serialize_datetime(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._serialize_datetime(item) for item in obj]
+        else:
+            return obj
 
     def export_compact(self, document: 'NPADocument', output_path: str) -> str:
         """
@@ -95,6 +119,7 @@ class JSONExporter:
             str: JSON строка
         """
         data = document.to_dict()
+        data = self._serialize_datetime(data)
         return json.dumps(
             data,
             ensure_ascii=False,

@@ -29,8 +29,9 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/Andrew821667/K_plus_parcer",
-    packages=find_packages(where="src"),
-    package_dir={"": "src"},
+    packages=['k_plus_parcer', 'k_plus_parcer.models', 'k_plus_parcer.extractors',
+              'k_plus_parcer.parsers', 'k_plus_parcer.exporters', 'k_plus_parcer.utils'],
+    package_dir={"k_plus_parcer": "src"},
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
