@@ -36,6 +36,7 @@ class ConsultantScraperV2:
     """
 
     BASE_URL = "https://online.consultant.ru"
+    LOGIN_URL = "https://login.consultant.ru/"  # Отдельный поддомен для авторизации
 
     def __init__(
         self,
@@ -158,64 +159,147 @@ class ConsultantScraperV2:
 
     async def login(self, username: str, password: str) -> bool:
         """
-        Авторизация на сайте
+        Авторизация на login.consultant.ru
 
-        ВАЖНО: Эту функцию нужно адаптировать под реальную структуру
-        формы авторизации на онлайн.consultant.ru
+        ⚠️ ТРЕБУЕТСЯ АДАПТАЦИЯ ПОД РЕАЛЬНУЮ СТРУКТУРУ ФОРМЫ ⚠️
+
+        Для адаптации выполните следующие шаги:
+        1. Откройте https://login.consultant.ru/ в браузере
+        2. Нажмите F12 → вкладка Elements
+        3. Найдите форму авторизации (Ctrl+F, поиск '<form')
+        4. Изучите имена полей ввода (атрибут 'name' в <input>)
+        5. Обновите TODO секции ниже реальными значениями
 
         Args:
-            username: Логин
+            username: Логин (email)
             password: Пароль
 
         Returns:
             bool: True если авторизация успешна
         """
-        logger.info("Начало авторизации")
+        logger.info("Начало авторизации на login.consultant.ru")
 
         try:
-            # Шаг 1: Получаем страницу входа (для CSRF токена если нужен)
-            login_page_url = f"{self.BASE_URL}/auth/login"
-            response = await self._request_with_retry("GET", login_page_url)
+            # ═════════════════════════════════════════════════════════════
+            # ШАГ 1: Получаем страницу входа
+            # ═════════════════════════════════════════════════════════════
+            logger.info(f"Запрос страницы авторизации: {self.LOGIN_URL}")
+            response = await self._request_with_retry("GET", self.LOGIN_URL)
 
-            # Парсим HTML для поиска CSRF токена (если используется)
+            # Парсим HTML
             soup = BeautifulSoup(response.text, 'lxml')
 
-            # TODO: Найти реальные имена полей на сайте
-            # Пример структуры которую нужно проверить:
-            csrf_token = soup.find("input", {"name": "csrf_token"})
+            # ═════════════════════════════════════════════════════════════
+            # TODO #1: CSRF ТОКЕН (если используется)
+            # ═════════════════════════════════════════════════════════════
+            # Найдите в форме скрытое поле с токеном:
+            # <input type="hidden" name="???" value="...">
+            #
+            # Возможные имена: csrf_token, _csrf, token, authenticity_token
+            # ─────────────────────────────────────────────────────────────
+            csrf_token = soup.find("input", {"type": "hidden", "name": "_csrf"})  # ← ОБНОВИТЕ имя!
+
             if csrf_token:
                 csrf_value = csrf_token.get("value")
-                logger.info("CSRF токен найден")
+                logger.info(f"CSRF токен найден: {csrf_token.get('name')}")
             else:
                 csrf_value = None
+                logger.info("CSRF токен не обнаружен")
 
-            # Шаг 2: Отправляем форму авторизации
+            # ═════════════════════════════════════════════════════════════
+            # TODO #2: ФОРМА АВТОРИЗАЦИИ - ИМЕНА ПОЛЕЙ
+            # ═════════════════════════════════════════════════════════════
+            # Найдите в HTML:
+            # <input type="text" name="???" ...>      ← поле логина
+            # <input type="password" name="???" ...>  ← поле пароля
+            #
+            # Типичные варианты:
+            # - login, username, email, user, loginname
+            # - password, pass, pwd
+            # ─────────────────────────────────────────────────────────────
             login_data = {
-                "username": username,  # TODO: Проверить реальное имя поля
-                "password": password,  # TODO: Проверить реальное имя поля
+                "login": username,     # ← ОБНОВИТЕ имя поля логина!
+                "password": password,  # ← ОБНОВИТЕ имя поля пароля!
             }
 
             if csrf_value:
-                login_data["csrf_token"] = csrf_value
+                login_data["_csrf"] = csrf_value  # ← ОБНОВИТЕ имя CSRF поля!
 
-            # POST запрос с данными авторизации
+            # ═════════════════════════════════════════════════════════════
+            # TODO #3: URL ОТПРАВКИ ФОРМЫ
+            # ═════════════════════════════════════════════════════════════
+            # Найдите атрибут action формы:
+            # <form action="???" method="post">
+            #
+            # Если action пустой или относительный - используется текущий URL
+            # ─────────────────────────────────────────────────────────────
+            form = soup.find("form")
+            if form and form.get("action"):
+                form_action = form.get("action")
+                # Если относительный URL - добавляем базовый
+                if form_action.startswith("/"):
+                    post_url = "https://login.consultant.ru" + form_action
+                elif form_action.startswith("http"):
+                    post_url = form_action
+                else:
+                    post_url = self.LOGIN_URL + form_action
+            else:
+                post_url = self.LOGIN_URL  # Если action пустой
+
+            logger.info(f"POST URL: {post_url}")
+            logger.info(f"Данные формы: {list(login_data.keys())}")
+
+            # ═════════════════════════════════════════════════════════════
+            # ШАГ 2: Отправляем форму авторизации
+            # ═════════════════════════════════════════════════════════════
             response = await self._request_with_retry(
                 "POST",
-                login_page_url,
-                data=login_data
+                post_url,
+                data=login_data,
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": self.LOGIN_URL
+                }
             )
 
-            # Проверка успешности авторизации
-            # TODO: Проверить как именно сайт отвечает при успешном входе
-            if "login" not in response.url.path.lower():
-                logger.success("✅ Авторизация успешна")
+            # ═════════════════════════════════════════════════════════════
+            # TODO #4: ПРОВЕРКА УСПЕШНОСТИ АВТОРИЗАЦИИ
+            # ═════════════════════════════════════════════════════════════
+            # Варианты проверки:
+            # 1. Редирект на другую страницу (response.url изменился)
+            # 2. Наличие определенных cookie (session_id, auth_token и т.п.)
+            # 3. Отсутствие формы авторизации в ответе
+            # 4. Наличие специфического текста ("Личный кабинет", имя пользователя)
+            # ─────────────────────────────────────────────────────────────
+
+            # Проверка #1: URL изменился (редирект)
+            if str(response.url) != post_url and "login" not in str(response.url).lower():
+                logger.success(f"✅ Авторизация успешна (редирект на {response.url})")
+                return True
+
+            # Проверка #2: Cookie установлены
+            if self.session.cookies:
+                logger.info(f"Получены cookies: {list(self.session.cookies.keys())}")
+                # TODO: Проверьте есть ли специфичные cookie авторизации
+                # Например: if 'session_id' in self.session.cookies or 'auth_token' in self.session.cookies
+
+            # Проверка #3: Форма авторизации исчезла
+            soup_result = BeautifulSoup(response.text, 'lxml')
+            login_form_exists = soup_result.find("form", attrs={"action": lambda x: x and "login" in x.lower()})
+
+            if not login_form_exists:
+                logger.success("✅ Авторизация успешна (форма входа отсутствует)")
                 return True
             else:
-                logger.error("❌ Авторизация не удалась")
+                logger.error("❌ Авторизация не удалась (форма входа всё ещё присутствует)")
+                logger.debug(f"Response URL: {response.url}")
+                logger.debug(f"Response status: {response.status_code}")
                 return False
 
         except Exception as e:
             logger.error(f"❌ Ошибка при авторизации: {e}")
+            logger.exception("Детали ошибки:")
             return False
 
     async def search_documents(
